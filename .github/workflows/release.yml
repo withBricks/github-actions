@@ -1,0 +1,196 @@
+name: Release Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version-bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      create-release:
+        description: 'Create GitHub release'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  deployments: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Create deployment
+        id: deployment
+        uses: ./create-github-deployment
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          sha: ${{ github.sha }}
+          environment: production
+          description: "Release new version (${{ inputs.version-bump }} bump)"
+          initial-status-description: "Creating version tags and release..."
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get latest version
+        id: get-version
+        run: |
+          # Get the latest tag, or default to v0.0.0 if no tags exist
+          LATEST_TAG=$(git tag -l "v*.*.*" --sort=-v:refname | head -n 1)
+          
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+            echo "No previous tags found, starting from $LATEST_TAG"
+          else
+            echo "Latest tag: $LATEST_TAG"
+          fi
+          
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          
+          # Parse version components
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          
+          echo "current_major=$MAJOR" >> $GITHUB_OUTPUT
+          echo "current_minor=$MINOR" >> $GITHUB_OUTPUT
+          echo "current_patch=$PATCH" >> $GITHUB_OUTPUT
+
+      - name: Calculate new version
+        id: new-version
+        run: |
+          MAJOR=${{ steps.get-version.outputs.current_major }}
+          MINOR=${{ steps.get-version.outputs.current_minor }}
+          PATCH=${{ steps.get-version.outputs.current_patch }}
+          
+          case "${{ inputs.version-bump }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+          
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "major=v${MAJOR}" >> $GITHUB_OUTPUT
+          echo "major_number=${MAJOR}" >> $GITHUB_OUTPUT
+          
+          echo "New version will be: $NEW_VERSION"
+          echo "Major version tag: v${MAJOR}"
+
+      - name: Check if tag exists
+        id: check-tag
+        run: |
+          if git rev-parse "${{ steps.new-version.outputs.version }}" >/dev/null 2>&1; then
+            echo "::error::Tag ${{ steps.new-version.outputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Create version tag
+        run: |
+          git tag -a "${{ steps.new-version.outputs.version }}" -m "Release ${{ steps.new-version.outputs.version }}"
+          git push origin "${{ steps.new-version.outputs.version }}"
+          echo "✅ Created and pushed tag ${{ steps.new-version.outputs.version }}"
+
+      - name: Update major version tag
+        run: |
+          MAJOR_TAG="${{ steps.new-version.outputs.major }}"
+          
+          # Delete the major version tag locally and remotely if it exists
+          if git rev-parse "$MAJOR_TAG" >/dev/null 2>&1; then
+            git tag -d "$MAJOR_TAG"
+            git push origin ":refs/tags/$MAJOR_TAG" || true
+          fi
+          
+          # Create new major version tag pointing to the new version
+          git tag -a "$MAJOR_TAG" -m "Update $MAJOR_TAG to ${{ steps.new-version.outputs.version }}"
+          git push origin "$MAJOR_TAG"
+          echo "✅ Updated major version tag $MAJOR_TAG to point to ${{ steps.new-version.outputs.version }}"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG="${{ steps.get-version.outputs.latest_tag }}"
+          NEW_TAG="${{ steps.new-version.outputs.version }}"
+          
+          echo "## Changes in $NEW_TAG" > changelog.md
+          echo "" >> changelog.md
+          
+          if [ "$PREV_TAG" != "v0.0.0" ]; then
+            echo "### Commits" >> changelog.md
+            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" >> changelog.md
+            echo "" >> changelog.md
+            echo "" >> changelog.md
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$PREV_TAG...$NEW_TAG" >> changelog.md
+          else
+            echo "Initial release" >> changelog.md
+          fi
+          
+          cat changelog.md
+
+      - name: Create GitHub Release
+        if: inputs.create-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.new-version.outputs.version }}" \
+            --title "Release ${{ steps.new-version.outputs.version }}" \
+            --notes-file changelog.md
+
+      - name: Update deployment status - success
+        if: success()
+        uses: ./update-github-deployment
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          state: success
+          description: "Successfully released ${{ steps.new-version.outputs.version }}"
+
+      - name: Update deployment status - failure
+        if: failure()
+        uses: ./update-github-deployment
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          state: failure
+          description: "Failed to release version"
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "## 🎉 Version Release Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **New Version**: \`${{ steps.new-version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Major Tag**: \`${{ steps.new-version.outputs.major }}\` (updated)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Previous Version**: \`${{ steps.get-version.outputs.latest_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment**: [View deployment](https://github.com/${{ github.repository }}/deployments)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Usage in workflows:" >> $GITHUB_STEP_SUMMARY
+          echo '```yaml' >> $GITHUB_STEP_SUMMARY
+          echo "uses: ${{ github.repository }}/action-name@${{ steps.new-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "# or use the auto-updating major version:" >> $GITHUB_STEP_SUMMARY
+          echo "uses: ${{ github.repository }}/action-name@${{ steps.new-version.outputs.major }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,52 @@
+name: 'Update GitHub Deployment Status'
+description: 'Update the status of a GitHub deployment'
+
+inputs:
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+  repository:
+    description: 'Repository in owner/repo format'
+    required: true
+  deployment-id:
+    description: 'The deployment ID to update'
+    required: true
+  state:
+    description: 'The state to set (success, failure, error, inactive, in_progress, queued, pending)'
+    required: true
+  description:
+    description: 'Description for the status update'
+    required: false
+    default: ''
+  environment-url:
+    description: 'URL for accessing the deployment environment'
+    required: false
+    default: ''
+  log-url:
+    description: 'URL for accessing the deployment logs'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Update deployment status
+      shell: bash
+      run: |
+        ARGS="-f state=${{ inputs.state }}"
+        
+        if [ -n "${{ inputs.description }}" ]; then
+          ARGS="$ARGS -f description=\"${{ inputs.description }}\""
+        fi
+        
+        if [ -n "${{ inputs.environment-url }}" ]; then
+          ARGS="$ARGS -f environment_url=\"${{ inputs.environment-url }}\""
+        fi
+        
+        if [ -n "${{ inputs.log-url }}" ]; then
+          ARGS="$ARGS -f log_url=\"${{ inputs.log-url }}\""
+        fi
+        
+        eval gh api repos/${{ inputs.repository }}/deployments/${{ inputs.deployment-id }}/statuses $ARGS
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}

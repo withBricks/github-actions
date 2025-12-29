@@ -132,7 +132,127 @@ Stops SSM port forwarding session.
     ssm-pid: ${{ steps.bastion.outputs.ssm-pid }}
 ```
 
+### 5. create-github-deployment
+
+Creates a GitHub deployment and sets it to `in_progress` status. This enables deployment tracking in GitHub's deployment view and environments.
+
+**Inputs:**
+- `github-token` (required): GitHub token for API access (typically `${{ github.token }}`)
+- `repository` (required): Repository in `owner/repo` format
+- `sha` (required): Git SHA to deploy
+- `environment` (required): Environment name for the deployment
+- `description` (optional): Description for the deployment
+- `initial-status-description` (optional): Description for the initial `in_progress` status
+  - Default: `"Deployment in progress..."`
+
+**Outputs:**
+- `deployment-id`: The ID of the created deployment (use this to update status later)
+
+**Example:**
+```yaml
+- name: Create deployment
+  id: deployment
+  uses: withBricks/github-actions/create-github-deployment@v1
+  with:
+    github-token: ${{ github.token }}
+    repository: ${{ github.repository }}
+    sha: ${{ github.sha }}
+    environment: production
+    description: "Deploy v1.2.3 to production"
+    initial-status-description: "Applying Tofu configuration..."
+```
+
+### 6. update-github-deployment
+
+Updates the status of an existing GitHub deployment. Use this to mark deployments as successful, failed, or other states.
+
+**Inputs:**
+- `github-token` (required): GitHub token for API access
+- `repository` (required): Repository in `owner/repo` format
+- `deployment-id` (required): The deployment ID to update (from create-github-deployment output)
+- `state` (required): The state to set
+  - Valid values: `success`, `failure`, `error`, `inactive`, `in_progress`, `queued`, `pending`
+- `description` (optional): Description for the status update
+- `environment-url` (optional): URL for accessing the deployment environment
+- `log-url` (optional): URL for accessing the deployment logs
+
+**Example:**
+```yaml
+- name: Update deployment status - success
+  if: success()
+  uses: withBricks/github-actions/update-github-deployment@v1
+  with:
+    github-token: ${{ github.token }}
+    repository: ${{ github.repository }}
+    deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+    state: success
+    description: "Successfully deployed to production"
+    environment-url: "https://app.example.com"
+
+- name: Update deployment status - failure
+  if: failure()
+  uses: withBricks/github-actions/update-github-deployment@v1
+  with:
+    github-token: ${{ github.token }}
+    repository: ${{ github.repository }}
+    deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+    state: failure
+    description: "Deployment failed - check logs for details"
+```
+
+### 7. sync-to-gitlab
+
+Syncs GitHub repository commits to a GitLab repository with automatic divergence detection and commit author preservation. Handles Copilot-authored commits by using the workflow actor instead.
+
+**Features:**
+- Detects if GitLab already has the commit (skips unnecessary syncs)
+- Prevents sync if GitLab has diverged from GitHub
+- Preserves original commit author information
+- Handles Copilot merge commits by using the PR author
+- Secure credential handling with automatic cleanup
+
+**Inputs:**
+- `gitlab-token` (required): GitLab personal access token or OAuth token
+- `gitlab-repo-url` (required): GitLab repository URL (e.g., `https://gitlab.com/owner/repo.git`)
+- `branch` (optional): Branch to sync (default: `master`)
+- `commit-sha` (required): Commit SHA to sync
+- `author-name` (required): Original commit author name
+- `author-email` (required): Original commit author email
+- `actor-name` (optional): GitHub actor name (used for Copilot commits)
+- `actor-email` (optional): GitHub actor email (used for Copilot commits)
+
+**Outputs:**
+- `synced`: Whether sync was performed (`true`/`false`)
+- `skipped`: Whether sync was skipped because GitLab already had the commit (`true`/`false`)
+
+**Example:**
+```yaml
+- name: Checkout with full history
+  uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+
+- name: Sync to GitLab
+  uses: withBricks/github-actions/sync-to-gitlab@v1
+  with:
+    gitlab-token: ${{ secrets.GITLAB_SYNC_TOKEN }}
+    gitlab-repo-url: https://gitlab.com/myorg/myrepo.git
+    branch: master
+    commit-sha: ${{ github.sha }}
+    author-name: ${{ github.event.head_commit.author.name }}
+    author-email: ${{ github.event.head_commit.author.email }}
+    actor-name: ${{ github.actor }}
+    actor-email: ${{ github.event.pusher.email || format('{0}@users.noreply.github.com', github.actor) }}
+```
+
+**Requirements:**
+- Repository must be checked out with full history (`fetch-depth: 0`)
+- GitLab token needs write access to the target repository
+- Token should be stored as a repository secret
+
 ## Complete Workflow Example
+
+### Database Deployment with Bastion
 
 ```yaml
 name: Database Deployment
@@ -194,6 +314,122 @@ jobs:
           ssm-pid: ${{ steps.bastion.outputs.ssm-pid }}
 ```
 
+### Infrastructure Deployment with GitHub Deployment Tracking
+
+```yaml
+name: Infrastructure Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+      project:
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Create deployment tracking
+      - name: Create deployment
+        id: deployment
+        uses: withBricks/github-actions/create-github-deployment@v1
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          sha: ${{ github.sha }}
+          environment: ${{ inputs.environment }}
+          description: "Deploy ${{ inputs.project }} to ${{ inputs.environment }}"
+          initial-status-description: "Deploying infrastructure..."
+
+      # 2. Configure AWS
+      - name: Configure AWS
+        uses: withBricks/github-actions/configure-aws-access@v1
+        with:
+          target-account-role: ${{ secrets.TARGET_ROLE_ARN }}
+
+      # 3. Run deployment
+      - name: Deploy infrastructure
+        run: |
+          cd ${{ inputs.project }}
+          tofu init
+          tofu apply -auto-approve
+
+      # 4. Update deployment status - success
+      - name: Update deployment status - success
+        if: success()
+        uses: withBricks/github-actions/update-github-deployment@v1
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          state: success
+          description: "Successfully deployed ${{ inputs.project }} to ${{ inputs.environment }}"
+          environment-url: "https://${{ inputs.environment }}.example.com"
+
+      # 5. Update deployment status - failure
+      - name: Update deployment status - failure
+        if: failure()
+        uses: withBricks/github-actions/update-github-deployment@v1
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          state: failure
+          description: "Failed to deploy ${{ inputs.project }} to ${{ inputs.environment }}"
+```
+
+### GitLab Repository Sync
+
+```yaml
+name: Sync to GitLab
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    name: Sync repository to GitLab
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync to GitLab
+        uses: withBricks/github-actions/sync-to-gitlab@v1
+        with:
+          gitlab-token: ${{ secrets.GITLAB_SYNC_TOKEN }}
+          gitlab-repo-url: https://gitlab.com/myorg/myrepo.git
+          branch: master
+          commit-sha: ${{ github.sha }}
+          author-name: ${{ github.event.head_commit.author.name }}
+          author-email: ${{ github.event.head_commit.author.email }}
+          actor-name: ${{ github.actor }}
+          actor-email: ${{ github.event.pusher.email || format('{0}@users.noreply.github.com', github.actor) }}
+```
+
 ## Security Considerations
 
 ### Password Security
@@ -252,16 +488,58 @@ Changes to these actions should be tested before merging to main:
 1. Create a feature branch
 2. Test changes in a workflow using `@your-branch-name`
 3. Open PR for review
-4. After merge, create a new release tag
+4. After merge, create a new release using the automated release workflow
+
+## Releasing New Versions
+
+This repository uses an automated release workflow to manage versions.
 
 ### Creating a Release
 
+1. Go to **Actions** → **Release Version** workflow
+2. Click **Run workflow**
+3. Select the version bump type:
+   - **patch**: Bug fixes and minor updates (e.g., `v1.0.0` → `v1.0.1`)
+   - **minor**: New features, backwards compatible (e.g., `v1.0.1` → `v1.1.0`)
+   - **major**: Breaking changes (e.g., `v1.1.0` → `v2.0.0`)
+4. Choose whether to create a GitHub release (recommended)
+5. Click **Run workflow**
+
+The workflow will:
+- ✅ Calculate the next version number
+- ✅ Create a new version tag (e.g., `v1.2.3`)
+- ✅ Update the major version tag (e.g., `v1`) to point to the new version
+- ✅ Generate a changelog from commits
+- ✅ Create a GitHub release (if selected)
+
+### Version Tag Strategy
+
+- **Specific versions** (`v1.2.3`): Never change, guaranteed stability
+- **Major version tags** (`v1`, `v2`): Auto-update to latest minor/patch, recommended for most users
+- **Branch** (`@main`): Latest development, not recommended for production
+
+**Example usage in workflows:**
 ```bash
-# Patch version (bug fixes)
-git tag -a v1.0.1 -m "Fix SSM timeout handling"
+# Recommended: Auto-updates with patches and features
+uses: withBricks/github-actions/configure-aws-access@v1
+
+# Pin to exact version: Never changes
+uses: withBricks/github-actions/configure-aws-access@v1.2.3
+
+# Latest development: Use for testing only
+uses: withBricks/github-actions/configure-aws-access@main
+```
+
+### Manual Release (Advanced)
+
+If you need to create a release manually:
+
+```bash
+# Create a new version tag
+git tag -a v1.0.1 -m "Release v1.0.1"
 git push origin v1.0.1
 
-# Update v1 major version tag
+# Update the major version tag to point to the new version
 git tag -f v1
 git push -f origin v1
 ```

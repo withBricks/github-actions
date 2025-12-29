@@ -1,0 +1,143 @@
+name: 'Sync to GitLab'
+description: 'Sync GitHub repository commits to GitLab with divergence detection and author preservation'
+
+inputs:
+  gitlab-token:
+    description: 'GitLab personal access token or OAuth token'
+    required: true
+  gitlab-repo-url:
+    description: 'GitLab repository URL (e.g., https://gitlab.com/owner/repo.git)'
+    required: true
+  branch:
+    description: 'Branch to sync'
+    required: false
+    default: 'master'
+  commit-sha:
+    description: 'Commit SHA to sync'
+    required: true
+  author-name:
+    description: 'Original commit author name'
+    required: true
+  author-email:
+    description: 'Original commit author email'
+    required: true
+  actor-name:
+    description: 'GitHub actor name (used for Copilot commits)'
+    required: false
+    default: ''
+  actor-email:
+    description: 'GitHub actor email (used for Copilot commits)'
+    required: false
+    default: ''
+
+outputs:
+  synced:
+    description: 'Whether sync was performed (true/false)'
+    value: ${{ steps.sync.outputs.synced }}
+  skipped:
+    description: 'Whether sync was skipped (true/false)'
+    value: ${{ steps.check.outputs.skip }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check if GitLab already has this commit
+      id: check
+      shell: bash
+      env:
+        GITLAB_TOKEN: ${{ inputs.gitlab-token }}
+        COMMIT_SHA: ${{ inputs.commit-sha }}
+        GITLAB_URL: ${{ inputs.gitlab-repo-url }}
+        BRANCH: ${{ inputs.branch }}
+      run: |
+        # Set up cleanup trap to ensure credentials are removed even if script fails
+        trap 'rm -f ~/.git-credentials' EXIT
+
+        # Configure git credential helper
+        git config --global credential.helper store
+        GITLAB_HOST=$(echo "$GITLAB_URL" | sed -E 's|https?://([^/]+)/.*|\1|')
+        echo "https://oauth2:${GITLAB_TOKEN}@${GITLAB_HOST}" > ~/.git-credentials
+
+        # Add GitLab as remote and fetch
+        git remote add gitlab "$GITLAB_URL" 2>/dev/null || git remote set-url gitlab "$GITLAB_URL"
+
+        # Fetch GitLab branch
+        if git fetch gitlab "$BRANCH" 2>/dev/null; then
+          # Check if this exact commit exists on GitLab
+          if git branch -r --contains "$COMMIT_SHA" | grep -q "gitlab/$BRANCH"; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping sync - GitLab already has commit $COMMIT_SHA"
+          else
+            # Check if GitLab has commits that GitHub doesn't (GitLab is ahead)
+            if ! git merge-base --is-ancestor gitlab/$BRANCH HEAD; then
+              echo "::error::GitLab has diverged from GitHub. GitLab contains commits not present in GitHub."
+              echo "::error::Manual intervention required to merge GitLab changes into GitHub before sync can continue."
+              exit 1
+            else
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "GitLab does not have commit $COMMIT_SHA - will sync"
+            fi
+          fi
+        else
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Could not fetch from GitLab - will attempt sync"
+        fi
+
+        # Cleanup happens automatically via trap
+
+    - name: Push to GitLab
+      id: sync
+      if: steps.check.outputs.skip != 'true'
+      shell: bash
+      env:
+        GITLAB_TOKEN: ${{ inputs.gitlab-token }}
+        GITLAB_URL: ${{ inputs.gitlab-repo-url }}
+        BRANCH: ${{ inputs.branch }}
+        AUTHOR_NAME: ${{ inputs.author-name }}
+        AUTHOR_EMAIL: ${{ inputs.author-email }}
+        ACTOR_NAME: ${{ inputs.actor-name }}
+        ACTOR_EMAIL: ${{ inputs.actor-email }}
+      run: |
+        # Set up cleanup trap to ensure credentials are removed even if script fails
+        trap 'rm -f ~/.git-credentials' EXIT
+
+        # Configure git to preserve original commit author
+        # If author is Copilot (PR merge commit), use the actor instead
+        if [[ "$AUTHOR_NAME" == "Copilot" ]] && [[ -n "$ACTOR_NAME" ]]; then
+          echo "Detected Copilot commit, using workflow actor: $ACTOR_NAME"
+          git config --global user.name "$ACTOR_NAME"
+          git config --global user.email "$ACTOR_EMAIL"
+        else
+          git config --global user.name "$AUTHOR_NAME"
+          git config --global user.email "$AUTHOR_EMAIL"
+        fi
+
+        # Configure git credential helper to avoid token exposure in logs
+        git config --global credential.helper store
+        install -m 600 /dev/null ~/.git-credentials
+        GITLAB_HOST=$(echo "$GITLAB_URL" | sed -E 's|https?://([^/]+)/.*|\1|')
+        echo "https://oauth2:${GITLAB_TOKEN}@${GITLAB_HOST}" > ~/.git-credentials
+
+        # Configure GitLab remote
+        git remote add gitlab "$GITLAB_URL" 2>/dev/null || git remote set-url gitlab "$GITLAB_URL"
+
+        # Push to GitLab with normal push (not force) since we've verified no divergence
+        echo "Pushing changes to GitLab..."
+        if git push gitlab "$BRANCH"; then
+          echo "Successfully synced to GitLab"
+          echo "synced=true" >> $GITHUB_OUTPUT
+        else
+          EXIT_CODE=$?
+          echo "Error: Failed to push to GitLab. Exit code: $EXIT_CODE"
+          echo "Push to GitLab failed. Possible causes include:"
+          echo "  - Invalid or missing GitLab token"
+          echo "  - Insufficient repository or branch permissions (e.g., branch protection rules)"
+          echo "  - Network issues or temporary problems with GitLab"
+          echo "Diagnostics:"
+          echo "  - Current branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+          echo "  - Configured GitLab remote(s):"
+          git remote -v || true
+          exit 1
+        fi
+
+        # Cleanup happens automatically via trap
