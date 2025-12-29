@@ -1,0 +1,99 @@
+name: 'Connect to Database via EC2 Bastion'
+description: 'Establishes SSM port forwarding through EC2 bastion for database access'
+inputs:
+  environment:
+    description: 'Environment name (dev or prod)'
+    required: true
+  db-host:
+    description: 'Database hostname'
+    required: true
+    default: 'postgres.equips.service'
+  db-port:
+    description: 'Database port'
+    required: true
+    default: '5432'
+  local-port:
+    description: 'Local port to forward to'
+    required: true
+    default: '5432'
+outputs:
+  instance-id:
+    description: 'EC2 bastion instance ID'
+    value: ${{ steps.get_bastion.outputs.instance_id }}
+  ssm-pid:
+    description: 'SSM session process ID for cleanup'
+    value: ${{ steps.port_forward.outputs.ssm_pid }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Get bastion instance ID
+      id: get_bastion
+      shell: bash
+      run: |
+        # Get the bastion instance ID by tag
+        INSTANCE_ID=$(aws ec2 describe-instances \
+          --filters "Name=tag:Name,Values=${{ inputs.environment }}-github-bastion" \
+                    "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].InstanceId' \
+          --output text)
+        
+        if [ "$INSTANCE_ID" = "null" ] || [ -z "$INSTANCE_ID" ]; then
+          echo "Error: Bastion instance not found or not running"
+          exit 1
+        fi
+        
+        echo "Using bastion instance: $INSTANCE_ID"
+        echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+        
+        # Wait for SSM agent to be online (should already be, but verify)
+        echo "Verifying SSM agent is online..."
+        for i in {1..30}; do
+          STATUS=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+            --query 'InstanceInformationList[0].PingStatus' \
+            --output text 2>/dev/null || echo "Unknown")
+          
+          if [ "$STATUS" = "Online" ]; then
+            echo "SSM agent is online"
+            break
+          fi
+          
+          echo "SSM status: $STATUS, waiting..."
+          sleep 2
+        done
+
+    - name: Start port forwarding via SSM
+      id: port_forward
+      shell: bash
+      run: |
+        INSTANCE_ID="${{ steps.get_bastion.outputs.instance_id }}"
+        
+        echo "Setting up SSM port forwarding"
+        echo "Instance: $INSTANCE_ID"
+        echo "Remote host: ${{ inputs.db-host }}:${{ inputs.db-port }}"
+        echo "Local port: ${{ inputs.local-port }}"
+        
+        # Use AWS-StartPortForwardingSessionToRemoteHost document
+        # This forwards from localhost:LOCAL_PORT -> bastion -> DB_HOST:DB_PORT
+        aws ssm start-session \
+          --target "$INSTANCE_ID" \
+          --document-name AWS-StartPortForwardingSessionToRemoteHost \
+          --parameters "{\"host\":[\"${{ inputs.db-host }}\"],\"portNumber\":[\"${{ inputs.db-port }}\"],\"localPortNumber\":[\"${{ inputs.local-port }}\"]}" \
+          &
+        
+        SSM_PID=$!
+        echo "ssm_pid=$SSM_PID" >> $GITHUB_OUTPUT
+        
+        # Wait for port to be available locally
+        echo "Waiting for port forwarding to establish..."
+        for i in {1..30}; do
+          if nc -z localhost ${{ inputs.local-port }} 2>/dev/null; then
+            echo "Port forwarding established successfully"
+            exit 0
+          fi
+          sleep 2
+        done
+        
+        echo "Failed to establish port forwarding"
+        exit 1

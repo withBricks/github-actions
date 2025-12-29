@@ -1,0 +1,32 @@
+name: 'Configure AWS Access'
+description: 'Configure AWS credentials with OIDC and optionally assume cross-account role'
+
+inputs:
+  bricks-ou-role:
+    description: 'Bricks OU GitHub Actions OIDC role ARN'
+    required: false
+    default: 'arn:aws:iam::843062504052:role/BricksOUGitHubActionsRole'
+  target-account-role:
+    description: 'Target account cross-account role ARN (optional)'
+    required: false
+  aws-region:
+    description: 'AWS region'
+    required: false
+    default: 'us-east-1'
+
+runs:
+  using: composite
+  steps:
+    - name: Configure AWS credentials (Bricks OU)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.bricks-ou-role }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Assume target account role
+      if: inputs.target-account-role != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.target-account-role }}
+        aws-region: ${{ inputs.aws-region }}
+        role-chaining: true

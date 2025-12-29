@@ -1,0 +1,24 @@
+name: 'Cleanup Bastion Connection'
+description: 'Stop SSM port forwarding session'
+
+inputs:
+  ssm-pid:
+    description: 'Process ID of the SSM session to kill'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Stop SSM session
+      if: always()
+      shell: bash
+      env:
+        SSM_PID: ${{ inputs.ssm-pid }}
+      run: |
+        if [ -n "$SSM_PID" ]; then
+          echo "Stopping SSM session (PID: $SSM_PID)"
+          kill $SSM_PID 2>/dev/null || true
+          echo "SSM session stopped"
+        else
+          echo "No SSM PID provided, skipping cleanup"
+        fi

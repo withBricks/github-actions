@@ -1,0 +1,43 @@
+name: 'Get Database Credentials'
+description: 'Retrieve database credentials from AWS Secrets Manager (securely masked)'
+
+inputs:
+  secret-id:
+    description: 'Secrets Manager secret ID'
+    required: true
+
+outputs:
+  username:
+    description: 'Database username'
+    value: ${{ steps.get_creds.outputs.username }}
+  password:
+    description: 'Database password (masked)'
+    value: ${{ steps.get_creds.outputs.password }}
+
+runs:
+  using: composite
+  steps:
+    - name: Retrieve and mask credentials
+      id: get_creds
+      shell: bash
+      env:
+        SECRET_ID: ${{ inputs.secret-id }}
+      run: |
+        # Retrieve credentials from Secrets Manager
+        # Note: Using --query to extract only what we need, never the full secret
+        DB_USERNAME=$(aws secretsmanager get-secret-value \
+          --secret-id "$SECRET_ID" \
+          --query 'SecretString' \
+          --output text | jq -r .username)
+        
+        DB_PASSWORD=$(aws secretsmanager get-secret-value \
+          --secret-id "$SECRET_ID" \
+          --query 'SecretString' \
+          --output text | jq -r .password)
+        
+        # Mask password BEFORE any output
+        echo "::add-mask::$DB_PASSWORD"
+        
+        # Set outputs (password is already masked)
+        echo "username=$DB_USERNAME" >> $GITHUB_OUTPUT
+        echo "password=$DB_PASSWORD" >> $GITHUB_OUTPUT
