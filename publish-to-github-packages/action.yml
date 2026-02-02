@@ -1,0 +1,182 @@
+name: 'Publish to GitHub Packages'
+description: 'Automatically version, build, and publish npm packages to GitHub Packages with release creation'
+
+inputs:
+  package-path:
+    description: 'Path to package directory (e.g., packages/types)'
+    required: true
+  version-bump:
+    description: 'Version bump type (patch, minor, major)'
+    required: false
+    default: 'patch'
+  scope:
+    description: 'Package scope (e.g., @bricks, @withBricks)'
+    required: true
+  skip-ci-pattern:
+    description: 'Pattern to add to commit message to skip CI'
+    required: false
+    default: '[skip ci]'
+  create-release:
+    description: 'Whether to create a GitHub release'
+    required: false
+    default: 'true'
+  tag-prefix:
+    description: 'Prefix for git tags (e.g., types-v, api-v)'
+    required: false
+    default: 'v'
+  github-token:
+    description: 'GitHub token with contents:write and packages:write permissions'
+    required: true
+  node-version:
+    description: 'Node.js version to use'
+    required: false
+    default: '20'
+  package-manager:
+    description: 'Package manager to use (npm, bun, yarn, pnpm)'
+    required: false
+    default: 'npm'
+
+outputs:
+  version:
+    description: 'The new version number that was published'
+    value: ${{ steps.get-version.outputs.version }}
+  tag:
+    description: 'The git tag that was created'
+    value: ${{ steps.create-tag.outputs.tag }}
+  package-name:
+    description: 'The package name that was published'
+    value: ${{ steps.get-package-info.outputs.package-name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        registry-url: 'https://npm.pkg.github.com'
+        scope: ${{ inputs.scope }}
+
+    - name: Get package info
+      id: get-package-info
+      shell: bash
+      working-directory: ${{ inputs.package-path }}
+      run: |
+        PACKAGE_NAME=$(node -p "require('./package.json').name")
+        echo "package-name=${PACKAGE_NAME}" >> $GITHUB_OUTPUT
+        echo "📦 Package: ${PACKAGE_NAME}"
+
+    - name: Auto-increment version
+      shell: bash
+      working-directory: ${{ inputs.package-path }}
+      run: |
+        echo "🔢 Bumping version (${{ inputs.version-bump }})..."
+        ${{ inputs.package-manager }} version ${{ inputs.version-bump }} --no-git-tag-version
+
+    - name: Get new version
+      id: get-version
+      shell: bash
+      working-directory: ${{ inputs.package-path }}
+      run: |
+        NEW_VERSION=$(node -p "require('./package.json').version")
+        echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "✨ New version: ${NEW_VERSION}"
+
+    - name: Build package
+      shell: bash
+      working-directory: ${{ inputs.package-path }}
+      run: |
+        if grep -q '"build"' package.json; then
+          echo "🔨 Building package..."
+          ${{ inputs.package-manager }} run build
+        else
+          echo "ℹ️ No build script found, skipping build step"
+        fi
+
+    - name: Configure GitHub Packages authentication
+      shell: bash
+      working-directory: ${{ inputs.package-path }}
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        SCOPE_WITHOUT_AT=$(echo "${{ inputs.scope }}" | sed 's/@//')
+        echo "🔐 Configuring authentication for scope: ${{ inputs.scope }}"
+        cat > .npmrc << EOF
+        @${SCOPE_WITHOUT_AT}:registry=https://npm.pkg.github.com
+        //npm.pkg.github.com/:_authToken=\${NODE_AUTH_TOKEN}
+        EOF
+
+    - name: Publish package
+      shell: bash
+      working-directory: ${{ inputs.package-path }}
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        echo "📤 Publishing package to GitHub Packages..."
+        npm publish
+
+    - name: Commit version bump
+      shell: bash
+      run: |
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git config user.name "github-actions[bot]"
+        
+        cd ${{ inputs.package-path }}
+        git add package.json
+        
+        PACKAGE_NAME="${{ steps.get-package-info.outputs.package-name }}"
+        NEW_VERSION="${{ steps.get-version.outputs.version }}"
+        
+        echo "💾 Committing version bump..."
+        git commit -m "chore: bump ${PACKAGE_NAME} to v${NEW_VERSION} ${{ inputs.skip-ci-pattern }}"
+
+    - name: Create and push tag
+      id: create-tag
+      shell: bash
+      run: |
+        TAG_NAME="${{ inputs.tag-prefix }}${{ steps.get-version.outputs.version }}"
+        echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+        
+        echo "🏷️ Creating tag: ${TAG_NAME}"
+        git tag "${TAG_NAME}"
+        
+        echo "⬆️ Pushing changes and tags..."
+        git push origin HEAD:${GITHUB_REF#refs/heads/}
+        git push origin "${TAG_NAME}"
+
+    - name: Create GitHub Release
+      if: inputs.create-release == 'true'
+      uses: ncipollo/release-action@v1
+      with:
+        token: ${{ inputs.github-token }}
+        tag: ${{ steps.create-tag.outputs.tag }}
+        name: "${{ steps.get-package-info.outputs.package-name }} v${{ steps.get-version.outputs.version }}"
+        body: |
+          Release of ${{ steps.get-package-info.outputs.package-name }} version ${{ steps.get-version.outputs.version }}
+          
+          Package published to GitHub Packages.
+          
+          ## Installation
+          
+          ```bash
+          npm install ${{ steps.get-package-info.outputs.package-name }}@${{ steps.get-version.outputs.version }}
+          ```
+          
+          Or add to your `.npmrc`:
+          ```
+          ${{ inputs.scope }}:registry=https://npm.pkg.github.com
+          ```
+          
+          ## Authentication
+          
+          For local development, add to `~/.npmrc`:
+          ```
+          ${{ inputs.scope }}:registry=https://npm.pkg.github.com
+          //npm.pkg.github.com/:_authToken=YOUR_GITHUB_PERSONAL_ACCESS_TOKEN
+          ```
+        draft: false
+        prerelease: false
+
+branding:
+  icon: 'package'
+  color: 'blue'

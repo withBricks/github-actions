@@ -1,0 +1,62 @@
+# Example workflow for publishing packages to GitHub Packages
+# Copy this to your repository and customize as needed
+
+name: Publish Package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/types/package.json'
+      - 'prisma/schema.prisma'
+  workflow_dispatch:
+    inputs:
+      version-bump:
+        description: 'Version bump type'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write  # Required for creating releases and pushing commits/tags
+  packages: write  # Required for publishing packages
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for proper versioning
+
+      - name: Setup Node.js (or Bun)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+        # Or use oven-sh/setup-bun@v1 for Bun
+
+      - name: Install dependencies
+        run: npm install
+        # Or: bun install
+
+      - name: Publish package to GitHub Packages
+        id: publish
+        uses: withBricks/github-actions/publish-to-github-packages@v1
+        with:
+          package-path: packages/types
+          version-bump: ${{ github.event.inputs.version-bump || 'patch' }}
+          scope: '@withBricks'
+          tag-prefix: types-v
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          node-version: '20'
+          package-manager: npm
+
+      - name: Output published version
+        run: |
+          echo "✅ Published ${{ steps.publish.outputs.package-name }} version ${{ steps.publish.outputs.version }}"
+          echo "🏷️ Tag: ${{ steps.publish.outputs.tag }}"

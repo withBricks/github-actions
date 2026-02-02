@@ -200,7 +200,71 @@ Updates the status of an existing GitHub deployment. Use this to mark deployment
     description: "Deployment failed - check logs for details"
 ```
 
-### 7. sync-to-gitlab
+### 7. publish-to-github-packages
+
+Automatically version, build, and publish npm packages to GitHub Packages with release creation. Handles version incrementing, tagging, and release notes generation.
+
+**Features:**
+- Automatic semantic versioning (patch, minor, major)
+- Package building before publishing
+- GitHub Packages authentication configuration
+- Git tag creation and pushing
+- Optional GitHub release creation with installation instructions
+- Support for multiple package managers (npm, bun, yarn, pnpm)
+
+**Inputs:**
+- `package-path` (required): Path to package directory (e.g., `packages/types`)
+- `version-bump` (optional): Version bump type - `patch`, `minor`, or `major` (default: `patch`)
+- `scope` (required): Package scope (e.g., `@bricks`, `@withBricks`)
+- `skip-ci-pattern` (optional): Pattern to add to commit message to skip CI (default: `[skip ci]`)
+- `create-release` (optional): Whether to create a GitHub release (default: `true`)
+- `tag-prefix` (optional): Prefix for git tags (e.g., `types-v`, `api-v`) (default: `v`)
+- `github-token` (required): GitHub token with `contents:write` and `packages:write` permissions
+- `node-version` (optional): Node.js version to use (default: `20`)
+- `package-manager` (optional): Package manager to use - `npm`, `bun`, `yarn`, or `pnpm` (default: `npm`)
+
+**Outputs:**
+- `version`: The new version number that was published
+- `tag`: The git tag that was created
+- `package-name`: The package name that was published
+
+**Example:**
+```yaml
+- name: Publish package to GitHub Packages
+  id: publish
+  uses: withBricks/github-actions/publish-to-github-packages@v1
+  with:
+    package-path: packages/types
+    version-bump: patch
+    scope: '@withBricks'
+    tag-prefix: types-v
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    
+- name: Output published version
+  run: |
+    echo "Published ${{ steps.publish.outputs.package-name }} version ${{ steps.publish.outputs.version }}"
+    echo "Tag: ${{ steps.publish.outputs.tag }}"
+```
+
+**Requirements:**
+- Package must be properly configured in `package.json` with:
+  ```json
+  {
+    "name": "@withBricks/package-name",
+    "publishConfig": {
+      "access": "restricted",
+      "registry": "https://npm.pkg.github.com"
+    }
+  }
+  ```
+- Workflow must have required permissions:
+  ```yaml
+  permissions:
+    contents: write
+    packages: write
+  ```
+
+### 8. sync-to-gitlab
 
 Syncs GitHub repository commits to a GitLab repository with automatic divergence detection and commit author preservation. Handles Copilot-authored commits by using the workflow actor instead.
 
@@ -250,7 +314,54 @@ Syncs GitHub repository commits to a GitLab repository with automatic divergence
 - GitLab token needs write access to the target repository
 - Token should be stored as a repository secret
 
-## Complete Workflow Example
+## Package Installation from GitHub Packages
+
+For packages published using the `publish-to-github-packages` action, consumers need to configure authentication:
+
+### For CI/CD (GitHub Actions)
+Uses `GITHUB_TOKEN` automatically with `actions/setup-node`:
+
+```yaml
+- uses: actions/setup-node@v4
+  with:
+    registry-url: 'https://npm.pkg.github.com'
+    scope: '@withBricks'
+    
+- run: npm install
+  env:
+    NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### For Local Development
+
+Create `~/.npmrc` with your GitHub Personal Access Token:
+```
+@withBricks:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=YOUR_GITHUB_PERSONAL_ACCESS_TOKEN
+```
+
+To generate a token:
+1. Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. Generate new token with `read:packages` scope
+3. Add token to `~/.npmrc`
+
+### For Project Configuration
+
+Create `.npmrc` in project root:
+```
+@withBricks:registry=https://npm.pkg.github.com
+```
+
+Then use environment variable for token:
+```bash
+echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc
+```
+
+## Complete Workflow Examples
+
+### Publish Package to GitHub Packages
+
+See [examples/publish-package-workflow.yml](examples/publish-package-workflow.yml) for a complete example workflow.
 
 ### Database Deployment with Bastion
 
