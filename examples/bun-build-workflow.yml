@@ -1,0 +1,55 @@
+# Example workflow for using setup-bun-with-dependencies action
+# Copy this to your repository and customize as needed
+
+name: Build with Bun
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun and install dependencies
+        uses: withBricks/github-actions/setup-bun-with-dependencies@v1
+        with:
+          bun-version: 1.3.0
+
+      - name: Run tests
+        run: bun test
+
+      - name: Build project
+        run: bun run build
+
+      - name: Lint code
+        run: bun run lint
+
+  # Example for monorepo with multiple packages
+  build-monorepo:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [backend, frontend, shared]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun for ${{ matrix.package }}
+        uses: withBricks/github-actions/setup-bun-with-dependencies@v1
+        with:
+          bun-version: 1.3.0
+          working-directory: packages/${{ matrix.package }}
+
+      - name: Build ${{ matrix.package }}
+        working-directory: packages/${{ matrix.package }}
+        run: bun run build
+
+      - name: Test ${{ matrix.package }}
+        working-directory: packages/${{ matrix.package }}
+        run: bun test

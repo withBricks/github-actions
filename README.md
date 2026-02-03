@@ -1,6 +1,6 @@
 # Bricks Shared GitHub Actions
 
-Reusable composite actions for AWS infrastructure automation with database access via EC2 bastion.
+Reusable composite actions for AWS infrastructure automation, development environment setup, and CI/CD workflows.
 
 ## Usage
 
