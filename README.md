@@ -541,6 +541,49 @@ jobs:
           actor-email: ${{ github.event.pusher.email || format('{0}@users.noreply.github.com', github.actor) }}
 ```
 
+### 9. setup-bun-with-dependencies
+
+Sets up Bun runtime, caches dependencies, and installs packages with frozen lockfile. Optimized for CI/CD pipelines with intelligent caching.
+
+**Features:**
+- Installs specified Bun version (or latest)
+- Caches Bun install cache and node_modules for faster builds
+- Installs dependencies with `--frozen-lockfile` for reproducible builds
+- Supports custom working directories for monorepo setups
+
+**Inputs:**
+- `bun-version` (optional): Bun version to install (default: `1.3.0`)
+- `working-directory` (optional): Working directory where package.json is located (default: `.`)
+
+**Example:**
+```yaml
+- name: Setup Bun and install dependencies
+  uses: withBricks/github-actions/setup-bun-with-dependencies@v1
+  with:
+    bun-version: 1.3.0
+    working-directory: .
+
+- name: Build project
+  run: bun run build
+```
+
+**Monorepo Example:**
+```yaml
+- name: Setup Bun for backend
+  uses: withBricks/github-actions/setup-bun-with-dependencies@v1
+  with:
+    bun-version: 1.3.0
+    working-directory: apps/backend
+
+- name: Build backend
+  working-directory: apps/backend
+  run: bun run build
+```
+
+**Requirements:**
+- Project must have a `bun.lockb` lockfile
+- `package.json` must exist in the working directory
+
 ## Security Considerations
 
 ### Password Security
