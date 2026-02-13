@@ -581,7 +581,7 @@ Sets up Bun runtime, caches dependencies, and installs packages with frozen lock
 ```
 
 **Requirements:**
-- Project must have a `bun.lockb` lockfile
+- Project must have a `bun.lock` or `bun.lockb` lockfile
 - `package.json` must exist in the working directory
 
 ## Security Considerations
