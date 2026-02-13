@@ -584,6 +584,61 @@ Sets up Bun runtime, caches dependencies, and installs packages with frozen lock
 - Project must have a `bun.lock` or `bun.lockb` lockfile
 - `package.json` must exist in the working directory
 
+### 10. configure-npm-github-packages
+
+Configures npm to use GitHub Packages registry with authentication for scoped packages.
+
+**Features:**
+- Configures npm registry for specified scope to GitHub Packages
+- Sets up authentication token for package installation/publishing
+- Creates or appends to `.npmrc` file in the current directory
+
+**Inputs:**
+- `scope` (optional): Package scope (default: `@withbricks`)
+- `github-token` (required): GitHub token for authentication (typically `secrets.GITHUB_TOKEN`)
+
+**Example:**
+```yaml
+- name: Configure npm for GitHub Packages
+  uses: withBricks/github-actions/configure-npm-github-packages@v1
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Custom Scope Example:**
+```yaml
+- name: Configure npm for custom scope
+  uses: withBricks/github-actions/configure-npm-github-packages@v1
+  with:
+    scope: '@myorg'
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Full Workflow Example:**
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Configure npm for GitHub Packages
+        uses: withBricks/github-actions/configure-npm-github-packages@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build
+        run: npm run build
+```
+
 ## Security Considerations
 
 ### Password Security

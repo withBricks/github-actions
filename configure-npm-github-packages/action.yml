@@ -1,0 +1,20 @@
+name: 'Configure npm for GitHub Packages'
+description: 'Configure npm to use GitHub Packages registry with authentication'
+
+inputs:
+  scope:
+    description: 'Package scope (e.g., @withbricks)'
+    required: false
+    default: '@withbricks'
+  github-token:
+    description: 'GitHub token for authentication'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Configure npm for GitHub Packages
+      shell: bash
+      run: |
+        echo "${{ inputs.scope }}:registry=https://npm.pkg.github.com" >> .npmrc
+        echo "//npm.pkg.github.com/:_authToken=${{ inputs.github-token }}" >> .npmrc
