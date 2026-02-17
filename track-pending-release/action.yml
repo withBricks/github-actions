@@ -159,7 +159,9 @@ ${NEW_ENTRY}"
         BODY=$(gh release view "$ACTUAL_TAG" --json body --jq '.body' 2>/dev/null || echo "")
 
         # Count lines starting with "- " (each is a change entry)
-        COUNT=$(echo "$BODY" | grep -c '^[[:space:]]*- ' || echo "0")
+        # grep -c exits 1 on no matches but still prints "0"; use || true to
+        # suppress the non-zero exit without appending a second "0" to COUNT.
+        COUNT=$(echo "$BODY" | grep -c '^[[:space:]]*- ' || true)
 
         echo "count=${COUNT}" >> $GITHUB_OUTPUT
 
