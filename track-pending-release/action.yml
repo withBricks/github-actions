@@ -1,0 +1,198 @@
+name: 'Track Pending Release'
+description: 'Accumulates changes into a draft GitHub release for tracking pending deployments. Run on each push to your main branch to build a living changelog.'
+
+inputs:
+  github-token:
+    description: 'GitHub token for API access (needs contents:write)'
+    required: true
+  release-name:
+    description: 'Name for the draft release'
+    required: false
+    default: 'Pending Production Deployment'
+  tag-name:
+    description: 'Placeholder tag name for the draft release'
+    required: false
+    default: 'pending-production'
+  badge-gist-id:
+    description: 'Gist ID for dynamic badge updates (defaults to shared withBricks gist)'
+    required: false
+    default: '9694c4db606e1b566ed14aa52d277077'
+  badge-gist-token:
+    description: 'Personal access token with gist scope for badge updates (required to enable badge)'
+    required: false
+    default: ''
+  badge-filename:
+    description: 'Filename in the gist for the badge JSON (defaults to {repo-name}-pending-deploys.json)'
+    required: false
+    default: ''
+  badge-label:
+    description: 'Label text for the badge (defaults to "{repo-name} pending deploys")'
+    required: false
+    default: ''
+
+outputs:
+  entry:
+    description: 'The change entry that was added to the draft release'
+    value: ${{ steps.change.outputs.entry }}
+  count:
+    description: 'Total number of pending changes'
+    value: ${{ steps.count.outputs.count }}
+  badge-color:
+    description: 'Badge color based on pending count (green/yellow/orange)'
+    value: ${{ steps.count.outputs.color }}
+
+runs:
+  using: composite
+  steps:
+    - name: Determine change details
+      id: change
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        SHA="${{ github.sha }}"
+        SHORT_SHA="${SHA:0:7}"
+        REPO="${{ github.repository }}"
+
+        # Check if this commit is associated with a PR
+        # Retry with delay to handle GitHub API indexing lag
+        PR_JSON=""
+        for i in 1 2 3; do
+          PR_JSON=$(gh api "/repos/${REPO}/commits/${SHA}/pulls" 2>/dev/null | jq -r '.[0] // empty' || true)
+          if [ -n "$PR_JSON" ] && [ "$PR_JSON" != "null" ] && echo "$PR_JSON" | jq -e '.number' >/dev/null 2>&1; then
+            break
+          fi
+          [ $i -lt 3 ] && sleep 3
+        done
+
+        # Validate PR_JSON has the expected structure
+        if [ -n "$PR_JSON" ] && echo "$PR_JSON" | jq -e '.number' >/dev/null 2>&1; then
+          PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+          PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
+          PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.user.login')
+          PR_URL=$(echo "$PR_JSON" | jq -r '.html_url')
+
+          ENTRY="- [${PR_TITLE} (#${PR_NUMBER})](${PR_URL}) by @${PR_AUTHOR}"
+          echo "📋 PR merge detected: ${PR_TITLE} (#${PR_NUMBER})"
+        else
+          # Direct commit — use commit message and author
+          COMMIT_MSG=$(git log -1 --pretty=format:'%s' "$SHA")
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:'%an' "$SHA")
+          COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
+
+          ENTRY="- [${COMMIT_MSG} (${SHORT_SHA})](${COMMIT_URL}) by ${COMMIT_AUTHOR}"
+          echo "📋 Direct commit detected: ${COMMIT_MSG} (${SHORT_SHA})"
+        fi
+
+        # Use delimiter to safely pass the entry (may contain special chars)
+        EOF="EOF_$(date +%s%N)"
+        echo "entry<<${EOF}" >> $GITHUB_OUTPUT
+        echo "${ENTRY}" >> $GITHUB_OUTPUT
+        echo "${EOF}" >> $GITHUB_OUTPUT
+
+    - name: Update draft release
+      id: update
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        NEW_ENTRY: ${{ steps.change.outputs.entry }}
+        RELEASE_NAME: ${{ inputs.release-name }}
+        TAG_NAME: ${{ inputs.tag-name }}
+      run: |
+        # Find existing draft release by name (safe jq --arg avoids injection)
+        EXISTING_TAG=$(gh release list --json tagName,name,isDraft \
+          | jq -r --arg name "$RELEASE_NAME" \
+            '[.[] | select(.name == $name and .isDraft == true)][0].tagName // empty' \
+          2>/dev/null || echo "")
+
+        if [ -n "$EXISTING_TAG" ]; then
+          echo "📝 Found existing draft release with tag: ${EXISTING_TAG}"
+
+          # Get current body
+          CURRENT_BODY=$(gh release view "$EXISTING_TAG" --json body --jq '.body' 2>/dev/null || echo "")
+
+          # Append new entry (no leading indent — prevents Markdown code-block rendering)
+          if [ -n "$CURRENT_BODY" ]; then
+            UPDATED_BODY="${CURRENT_BODY}
+${NEW_ENTRY}"
+          else
+            UPDATED_BODY="## Changes
+
+${NEW_ENTRY}"
+          fi
+
+          # Write to a temp file to avoid argv length limits with large changelogs
+          NOTES_FILE=$(mktemp)
+          printf '%s' "$UPDATED_BODY" > "$NOTES_FILE"
+          gh release edit "$EXISTING_TAG" --notes-file "$NOTES_FILE"
+          rm -f "$NOTES_FILE"
+          echo "actual_tag=${EXISTING_TAG}" >> $GITHUB_OUTPUT
+          echo "✅ Appended change to existing draft release"
+        else
+          echo "📝 No existing draft release found — creating one"
+
+          # Delete the placeholder tag if it exists (from a previous cycle)
+          git tag -d "$TAG_NAME" 2>/dev/null || true
+          git push origin ":refs/tags/${TAG_NAME}" 2>/dev/null || true
+
+          BODY="## Changes
+
+${NEW_ENTRY}"
+
+          gh release create "$TAG_NAME" \
+            --title "$RELEASE_NAME" \
+            --notes "$BODY" \
+            --draft \
+            --target "${{ github.sha }}"
+
+          echo "actual_tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "✅ Created new draft release"
+        fi
+
+    - name: Count pending changes
+      id: count
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ACTUAL_TAG: ${{ steps.update.outputs.actual_tag }}
+      run: |
+        BODY=$(gh release view "$ACTUAL_TAG" --json body --jq '.body' 2>/dev/null || echo "")
+
+        # Count lines starting with "- " (each is a change entry)
+        # grep -c exits 1 on no matches but still prints "0"; use || true to
+        # suppress the non-zero exit without appending a second "0" to COUNT.
+        COUNT=$(echo "$BODY" | grep -c '^[[:space:]]*- ' || true)
+
+        echo "count=${COUNT}" >> $GITHUB_OUTPUT
+
+        if [ "$COUNT" -eq 0 ]; then
+          echo "color=green" >> $GITHUB_OUTPUT
+        elif [ "$COUNT" -le 5 ]; then
+          echo "color=yellow" >> $GITHUB_OUTPUT
+        else
+          echo "color=orange" >> $GITHUB_OUTPUT
+        fi
+
+        echo "📊 Pending changes count: ${COUNT}"
+
+    - name: Resolve badge defaults
+      id: badge
+      if: ${{ inputs.badge-gist-token != '' }}
+      shell: bash
+      run: |
+        REPO_NAME="${GITHUB_REPOSITORY#*/}"
+        FILENAME="${{ inputs.badge-filename }}"
+        LABEL="${{ inputs.badge-label }}"
+        echo "filename=${FILENAME:-${REPO_NAME}-pending-deploys.json}" >> $GITHUB_OUTPUT
+        echo "label=${LABEL:-${REPO_NAME} pending deploys}" >> $GITHUB_OUTPUT
+
+    - name: Update badge
+      if: ${{ inputs.badge-gist-token != '' }}
+      uses: schneegans/dynamic-badges-action@v1.7.0
+      with:
+        auth: ${{ inputs.badge-gist-token }}
+        gistID: ${{ inputs.badge-gist-id }}
+        filename: ${{ steps.badge.outputs.filename }}
+        label: ${{ steps.badge.outputs.label }}
+        message: ${{ steps.count.outputs.count }}
+        color: ${{ steps.count.outputs.color }}

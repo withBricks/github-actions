@@ -1,0 +1,150 @@
+name: 'Publish Pending Release'
+description: 'Publishes a draft release created by track-pending-release. Renames it with a timestamp, creates a permanent tag, and resets the badge. Typically run after a successful production deployment.'
+
+inputs:
+  github-token:
+    description: 'GitHub token for API access (needs contents:write)'
+    required: true
+  sha:
+    description: 'Git SHA to tag the release at'
+    required: true
+  release-name:
+    description: 'Name of the draft release to find (must match track-pending-release)'
+    required: false
+    default: 'Pending Production Deployment'
+  tag-prefix:
+    description: 'Prefix for the published release tag (e.g., "prod-" creates "prod-2025-01-15T143022")'
+    required: false
+    default: 'prod-'
+  title-prefix:
+    description: 'Prefix for the published release title (e.g., "Production Deploy" creates "Production Deploy - 2025-01-15 14:30 UTC")'
+    required: false
+    default: 'Production Deploy'
+  badge-gist-id:
+    description: 'Gist ID for dynamic badge updates (defaults to shared withBricks gist)'
+    required: false
+    default: '9694c4db606e1b566ed14aa52d277077'
+  badge-gist-token:
+    description: 'Personal access token with gist scope for badge updates (required to enable badge)'
+    required: false
+    default: ''
+  badge-filename:
+    description: 'Filename in the gist for the badge JSON (defaults to {repo-name}-pending-deploys.json)'
+    required: false
+    default: ''
+  badge-label:
+    description: 'Label text for the badge (defaults to "{repo-name} pending deploys")'
+    required: false
+    default: ''
+
+outputs:
+  published:
+    description: 'Whether a release was published (true/false)'
+    value: ${{ steps.publish.outputs.found }}
+  tag:
+    description: 'The tag that was created for the release'
+    value: ${{ steps.publish.outputs.tag }}
+  title:
+    description: 'The title of the published release'
+    value: ${{ steps.publish.outputs.title }}
+
+runs:
+  using: composite
+  steps:
+    - name: Find and publish draft release
+      id: publish
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        RELEASE_NAME: ${{ inputs.release-name }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        TITLE_PREFIX: ${{ inputs.title-prefix }}
+      run: |
+        TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
+        TAG_TIMESTAMP=$(date -u '+%Y-%m-%dT%H%M%S')
+        NEW_TAG="${TAG_PREFIX}${TAG_TIMESTAMP}"
+        NEW_TITLE="${TITLE_PREFIX} - ${TIMESTAMP}"
+
+        # Find the draft release by name (safe jq --arg avoids injection)
+        DRAFT_TAG=$(gh release list --json tagName,name,isDraft \
+          | jq -r --arg name "$RELEASE_NAME" \
+            '[.[] | select(.name == $name and .isDraft == true)][0].tagName // empty' \
+          2>/dev/null || echo "")
+
+        if [ -z "$DRAFT_TAG" ]; then
+          echo "⚠️ No draft release found — nothing to publish"
+          echo "found=false" >> $GITHUB_OUTPUT
+          echo "## ℹ️ No Pending Changes" >> $GITHUB_STEP_SUMMARY
+          echo "No draft release found. Nothing was merged since the last deployment." >> $GITHUB_STEP_SUMMARY
+          exit 0
+        fi
+
+        echo "found=true" >> $GITHUB_OUTPUT
+        echo "📋 Found draft release with tag: ${DRAFT_TAG}"
+
+        # Get the release body for the summary
+        BODY=$(gh release view "$DRAFT_TAG" --json body --jq '.body')
+
+        # Create the new tag at the specified commit
+        if git tag "$NEW_TAG" "${{ inputs.sha }}"; then
+          echo "✓ Created tag ${NEW_TAG}"
+        else
+          echo "❌ Failed to create tag ${NEW_TAG}"
+          exit 1
+        fi
+
+        if git push origin "$NEW_TAG"; then
+          echo "✓ Pushed tag ${NEW_TAG}"
+        else
+          echo "❌ Failed to push tag ${NEW_TAG}"
+          exit 1
+        fi
+
+        # Update and publish the release with new name and tag
+        if gh release edit "$DRAFT_TAG" \
+          --title "$NEW_TITLE" \
+          --tag "$NEW_TAG" \
+          --draft=false; then
+          echo "✓ Published release"
+        else
+          echo "❌ Failed to publish release"
+          exit 1
+        fi
+
+        # Clean up the old placeholder tag
+        git push origin ":refs/tags/${DRAFT_TAG}" 2>/dev/null || true
+
+        echo "tag=${NEW_TAG}" >> $GITHUB_OUTPUT
+        echo "title=${NEW_TITLE}" >> $GITHUB_OUTPUT
+
+        echo "✅ Published release: ${NEW_TITLE} (${NEW_TAG})"
+
+        # Write summary
+        echo "## 🚀 Release Published" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Release:** ${NEW_TITLE}" >> $GITHUB_STEP_SUMMARY
+        echo "**Tag:** ${NEW_TAG}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "${BODY}" >> $GITHUB_STEP_SUMMARY
+
+    - name: Resolve badge defaults
+      id: badge
+      if: ${{ inputs.badge-gist-token != '' && steps.publish.outputs.found == 'true' }}
+      shell: bash
+      run: |
+        REPO_NAME="${GITHUB_REPOSITORY#*/}"
+        FILENAME="${{ inputs.badge-filename }}"
+        LABEL="${{ inputs.badge-label }}"
+        echo "filename=${FILENAME:-${REPO_NAME}-pending-deploys.json}" >> $GITHUB_OUTPUT
+        echo "label=${LABEL:-${REPO_NAME} pending deploys}" >> $GITHUB_OUTPUT
+
+    - name: Reset badge
+      if: ${{ inputs.badge-gist-token != '' && steps.publish.outputs.found == 'true' }}
+      uses: schneegans/dynamic-badges-action@v1.7.0
+      with:
+        auth: ${{ inputs.badge-gist-token }}
+        gistID: ${{ inputs.badge-gist-id }}
+        filename: ${{ steps.badge.outputs.filename }}
+        label: ${{ steps.badge.outputs.label }}
+        message: "0"
+        color: green
