@@ -132,9 +132,7 @@ runs:
           git tag -d "$TAG_NAME" 2>/dev/null || true
           git push origin ":refs/tags/${TAG_NAME}" 2>/dev/null || true
 
-          BODY="## Changes
-
-${NEW_ENTRY}"
+          BODY=$(printf '## Changes\n\n%s' "$NEW_ENTRY")
 
           gh release create "$TAG_NAME" \
             --title "$RELEASE_NAME" \
