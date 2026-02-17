@@ -1,6 +1,9 @@
 name: Release Version
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version-bump:
@@ -29,7 +32,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
+
+      - name: Determine release parameters
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version_bump=patch" >> $GITHUB_OUTPUT
+            echo "create_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "version_bump=${{ inputs.version-bump }}" >> $GITHUB_OUTPUT
+            echo "create_release=${{ inputs.create-release }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create deployment
         id: deployment
         uses: ./create-github-deployment
@@ -38,7 +52,7 @@ jobs:
           repository: ${{ github.repository }}
           sha: ${{ github.sha }}
           environment: production
-          description: "Release new version (${{ inputs.version-bump }} bump)"
+          description: "Release new version (${{ steps.params.outputs.version_bump }} bump)"
           initial-status-description: "Creating version tags and release..."
 
       - name: Configure git
@@ -76,7 +90,7 @@ jobs:
           MINOR=${{ steps.get-version.outputs.current_minor }}
           PATCH=${{ steps.get-version.outputs.current_patch }}
           
-          case "${{ inputs.version-bump }}" in
+          case "${{ steps.params.outputs.version_bump }}" in
             major)
               MAJOR=$((MAJOR + 1))
               MINOR=0
@@ -150,7 +164,7 @@ jobs:
           cat changelog.md
 
       - name: Create GitHub Release
-        if: inputs.create-release
+        if: steps.params.outputs.create_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
