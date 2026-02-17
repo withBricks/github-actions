@@ -663,6 +663,9 @@ Accumulates changes into a draft GitHub release for tracking pending deployments
 - `count`: Total number of pending changes
 - `badge-color`: Badge color based on count (`green`/`yellow`/`orange`)
 
+> [!IMPORTANT]
+> A `concurrency` group with `cancel-in-progress: false` is **required** on the calling workflow. Without it, two pushes in quick succession can simultaneously read the same draft release, each compute an `UPDATED_BODY` based on stale content, and then race to write — causing one entry to be silently overwritten.
+
 **Example:**
 ```yaml
 name: Track Pending Changes
@@ -674,6 +677,7 @@ on:
 permissions:
   contents: write
 
+# Required: prevents concurrent runs from overwriting each other's entries
 concurrency:
   group: track-pending-changes
   cancel-in-progress: false

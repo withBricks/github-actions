@@ -91,6 +91,7 @@ runs:
         echo "${EOF}" >> $GITHUB_OUTPUT
 
     - name: Update draft release
+      id: update
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -98,9 +99,10 @@ runs:
         RELEASE_NAME: ${{ inputs.release-name }}
         TAG_NAME: ${{ inputs.tag-name }}
       run: |
-        # Find existing draft release
+        # Find existing draft release by name (safe jq --arg avoids injection)
         EXISTING_TAG=$(gh release list --json tagName,name,isDraft \
-          | jq -r '[.[] | select(.name == "'"${RELEASE_NAME}"'" and .isDraft == true)][0].tagName // empty' \
+          | jq -r --arg name "$RELEASE_NAME" \
+            '[.[] | select(.name == $name and .isDraft == true)][0].tagName // empty' \
           2>/dev/null || echo "")
 
         if [ -n "$EXISTING_TAG" ]; then
@@ -109,18 +111,22 @@ runs:
           # Get current body
           CURRENT_BODY=$(gh release view "$EXISTING_TAG" --json body --jq '.body' 2>/dev/null || echo "")
 
-          # Append new entry
+          # Append new entry (no leading indent — prevents Markdown code-block rendering)
           if [ -n "$CURRENT_BODY" ]; then
             UPDATED_BODY="${CURRENT_BODY}
-        ${NEW_ENTRY}"
+${NEW_ENTRY}"
           else
             UPDATED_BODY="## Changes
 
-        ${NEW_ENTRY}"
+${NEW_ENTRY}"
           fi
 
-          # Update the release body
-          gh release edit "$EXISTING_TAG" --notes "$UPDATED_BODY"
+          # Write to a temp file to avoid argv length limits with large changelogs
+          NOTES_FILE=$(mktemp)
+          printf '%s' "$UPDATED_BODY" > "$NOTES_FILE"
+          gh release edit "$EXISTING_TAG" --notes-file "$NOTES_FILE"
+          rm -f "$NOTES_FILE"
+          echo "actual_tag=${EXISTING_TAG}" >> $GITHUB_OUTPUT
           echo "✅ Appended change to existing draft release"
         else
           echo "📝 No existing draft release found — creating one"
@@ -131,7 +137,7 @@ runs:
 
           BODY="## Changes
 
-        ${NEW_ENTRY}"
+${NEW_ENTRY}"
 
           gh release create "$TAG_NAME" \
             --title "$RELEASE_NAME" \
@@ -139,6 +145,7 @@ runs:
             --draft \
             --target "${{ github.sha }}"
 
+          echo "actual_tag=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "✅ Created new draft release"
         fi
 
@@ -147,9 +154,9 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
-        TAG_NAME: ${{ inputs.tag-name }}
+        ACTUAL_TAG: ${{ steps.update.outputs.actual_tag }}
       run: |
-        BODY=$(gh release view "$TAG_NAME" --json body --jq '.body' 2>/dev/null || echo "")
+        BODY=$(gh release view "$ACTUAL_TAG" --json body --jq '.body' 2>/dev/null || echo "")
 
         # Count lines starting with "- " (each is a change entry)
         COUNT=$(echo "$BODY" | grep -c '^[[:space:]]*- ' || echo "0")

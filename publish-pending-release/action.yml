@@ -65,9 +65,10 @@ runs:
         NEW_TAG="${TAG_PREFIX}${TAG_TIMESTAMP}"
         NEW_TITLE="${TITLE_PREFIX} - ${TIMESTAMP}"
 
-        # Find the draft release
+        # Find the draft release by name (safe jq --arg avoids injection)
         DRAFT_TAG=$(gh release list --json tagName,name,isDraft \
-          | jq -r '[.[] | select(.name == "'"${RELEASE_NAME}"'" and .isDraft == true)][0].tagName // empty' \
+          | jq -r --arg name "$RELEASE_NAME" \
+            '[.[] | select(.name == $name and .isDraft == true)][0].tagName // empty' \
           2>/dev/null || echo "")
 
         if [ -z "$DRAFT_TAG" ]; then
