@@ -1,0 +1,83 @@
+# Example: Pending Release Tracking
+#
+# This setup uses two actions together to track what's been merged
+# since the last production deploy, then publish all changes as a
+# release when deploying.
+#
+# The pattern works in two parts:
+#   1. track-pending-changes.yml — runs on every push to main
+#   2. deploy-prod.yml — publishes the draft release after deploying
+#
+# Optionally, you can display a "pending deploys" badge in your README:
+#   ![Pending Deploys](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<user>/9694c4db606e1b566ed14aa52d277077/raw/<repo-name>-pending-deploys.json)
+#
+# To enable the badge:
+#   1. Add the GIST_TOKEN secret to your repository (PAT with gist scope)
+#      The gist ID and filename are auto-configured per repository.
+
+# ──────────────────────────────────────────────
+# File 1: .github/workflows/track-pending-changes.yml
+# ──────────────────────────────────────────────
+
+name: Track Pending Changes
+
+on:
+  push:
+    branches:
+      - main  # or master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: track-pending-changes
+  cancel-in-progress: false
+
+jobs:
+  update-draft-release:
+    runs-on: ubuntu-latest
+    name: Update Draft Release
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Track pending release
+        uses: withBricks/github-actions/track-pending-release@v1
+        with:
+          github-token: ${{ github.token }}
+          # Badge is enabled automatically when gist token is provided
+          badge-gist-token: ${{ secrets.GIST_TOKEN }}
+
+# ──────────────────────────────────────────────
+# File 2: .github/workflows/deploy-prod.yml
+# (add the publish-release job after your deployment job)
+# ──────────────────────────────────────────────
+
+# name: Deploy to Production
+#
+# on:
+#   workflow_dispatch:
+#
+# permissions:
+#   contents: write
+#
+# jobs:
+#   deploy:
+#     # ... your deployment steps ...
+#
+#   publish-release:
+#     name: Publish Release
+#     needs: deploy
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+#
+#       - name: Publish pending release
+#         uses: withBricks/github-actions/publish-pending-release@v1
+#         with:
+#           github-token: ${{ github.token }}
+#           sha: ${{ github.sha }}
+#           badge-gist-token: ${{ secrets.GIST_TOKEN }}

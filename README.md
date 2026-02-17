@@ -639,6 +639,109 @@ jobs:
         run: npm run build
 ```
 
+### 11. track-pending-release
+
+Accumulates changes into a draft GitHub release for tracking pending deployments. Run this on each push to your main branch to build a living changelog of what's queued for production. Pairs with `publish-pending-release`.
+
+**Features:**
+- Detects PR merges vs direct commits automatically (with retry for API lag)
+- Accumulates change entries in a draft release body
+- Creates the draft release if none exists
+- Optional dynamic badge showing pending change count
+
+**Inputs:**
+- `github-token` (required): GitHub token with `contents:write` permission
+- `release-name` (optional): Name for the draft release (default: `Pending Production Deployment`)
+- `tag-name` (optional): Placeholder tag name for the draft release (default: `pending-production`)
+- `badge-gist-id` (optional): Gist ID for dynamic badge updates (default: shared withBricks gist)
+- `badge-gist-token` (optional): PAT with gist scope — badge is enabled when this is provided
+- `badge-filename` (optional): Filename in the gist (default: `{repo-name}-pending-deploys.json`)
+- `badge-label` (optional): Label text for the badge (default: `{repo-name} pending deploys`)
+
+**Outputs:**
+- `entry`: The change entry that was added
+- `count`: Total number of pending changes
+- `badge-color`: Badge color based on count (`green`/`yellow`/`orange`)
+
+**Example:**
+```yaml
+name: Track Pending Changes
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: track-pending-changes
+  cancel-in-progress: false
+
+jobs:
+  update-draft-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Track pending release
+        uses: withBricks/github-actions/track-pending-release@v1
+        with:
+          github-token: ${{ github.token }}
+          badge-gist-token: ${{ secrets.GIST_TOKEN }}
+```
+
+### 12. publish-pending-release
+
+Publishes a draft release created by `track-pending-release`. Renames it with a timestamp, creates a permanent tag, cleans up the placeholder tag, and resets the badge. Run this after a successful production deployment.
+
+**Features:**
+- Finds and publishes the draft release with a timestamped tag
+- Generates step summary with release details
+- Cleans up placeholder tags
+- Resets the badge to zero
+- Gracefully handles missing drafts (no-op with summary)
+
+**Inputs:**
+- `github-token` (required): GitHub token with `contents:write` permission
+- `sha` (required): Git SHA to tag the release at
+- `release-name` (optional): Name of the draft release to find (default: `Pending Production Deployment`)
+- `tag-prefix` (optional): Prefix for the published tag (default: `prod-`)
+- `title-prefix` (optional): Prefix for the published title (default: `Production Deploy`)
+- `badge-gist-id` (optional): Gist ID for dynamic badge reset (default: shared withBricks gist)
+- `badge-gist-token` (optional): PAT with gist scope — badge reset is enabled when this is provided
+- `badge-filename` (optional): Filename in the gist (default: `{repo-name}-pending-deploys.json`)
+- `badge-label` (optional): Label text for the badge (default: `{repo-name} pending deploys`)
+
+**Outputs:**
+- `published`: Whether a release was published (`true`/`false`)
+- `tag`: The tag that was created (e.g., `prod-2025-01-15T143022`)
+- `title`: The title of the published release
+
+**Example:**
+```yaml
+# Add this job to your deployment workflow, after the deploy job
+publish-release:
+  name: Publish Release
+  needs: deploy
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Publish pending release
+      uses: withBricks/github-actions/publish-pending-release@v1
+      with:
+        github-token: ${{ github.token }}
+        sha: ${{ github.sha }}
+        badge-gist-token: ${{ secrets.GIST_TOKEN }}
+```
+
+**Full Workflow Example:**
+
+See [examples/pending-release-tracking-workflow.yml](examples/pending-release-tracking-workflow.yml) for a complete setup.
+
 ## Security Considerations
 
 ### Password Security
