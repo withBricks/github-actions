@@ -113,12 +113,9 @@ runs:
 
           # Append new entry (no leading indent — prevents Markdown code-block rendering)
           if [ -n "$CURRENT_BODY" ]; then
-            UPDATED_BODY="${CURRENT_BODY}
-${NEW_ENTRY}"
+            UPDATED_BODY=$(printf '%s\n%s' "$CURRENT_BODY" "$NEW_ENTRY")
           else
-            UPDATED_BODY="## Changes
-
-${NEW_ENTRY}"
+            UPDATED_BODY=$(printf '## Changes\n\n%s' "$NEW_ENTRY")
           fi
 
           # Write to a temp file to avoid argv length limits with large changelogs
