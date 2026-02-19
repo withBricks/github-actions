@@ -109,7 +109,7 @@ runs:
         # Publish by release ID to avoid any tag-name ambiguity.
         # Write the JSON payload to a temp file to handle large bodies.
         PATCH_FILE=$(mktemp)
-        printf '{"tag_name":%s,"name":%s,"draft":false}' \
+        printf '{"tag_name":%s,"name":%s,"draft":false,"make_latest":"true"}' \
           "$(printf '%s' "$NEW_TAG" | jq -Rs .)" \
           "$(printf '%s' "$NEW_TITLE" | jq -Rs .)" > "$PATCH_FILE"
         if gh api "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_ID}" --method PATCH --input "$PATCH_FILE"; then
