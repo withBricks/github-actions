@@ -65,13 +65,19 @@ runs:
         NEW_TAG="${TAG_PREFIX}${TAG_TIMESTAMP}"
         NEW_TITLE="${TITLE_PREFIX} - ${TIMESTAMP}"
 
-        # Find the draft release by name (safe jq --arg avoids injection)
-        DRAFT_TAG=$(gh release list --json tagName,name,isDraft \
-          | jq -r --arg name "$RELEASE_NAME" \
-            '[.[] | select(.name == $name and .isDraft == true)][0].tagName // empty' \
-          2>/dev/null || echo "")
+        # Use the REST API to find the draft release and get its numeric ID.
+        # gh release list --json does not expose the database ID, so we call
+        # gh api directly.  Using the numeric ID for the PATCH ensures we
+        # never accidentally publish a different release by a conflicting tag name.
+        DRAFT_INFO=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+          | jq --arg name "$RELEASE_NAME" \
+            '[.[] | select(.name == $name and .draft == true)][0]' \
+          2>/dev/null || echo "null")
 
-        if [ -z "$DRAFT_TAG" ]; then
+        DRAFT_TAG=$(echo "$DRAFT_INFO" | jq -r '.tag_name // empty')
+        DRAFT_ID=$(echo "$DRAFT_INFO" | jq -r '.id | if . == null then "" else tostring end')
+
+        if [ -z "$DRAFT_ID" ]; then
           echo "⚠️ No draft release found — nothing to publish"
           echo "found=false" >> $GITHUB_OUTPUT
           echo "## ℹ️ No Pending Changes" >> $GITHUB_STEP_SUMMARY
@@ -80,10 +86,10 @@ runs:
         fi
 
         echo "found=true" >> $GITHUB_OUTPUT
-        echo "📋 Found draft release with tag: ${DRAFT_TAG}"
+        echo "📋 Found draft release: ${DRAFT_TAG} (id: ${DRAFT_ID})"
 
-        # Get the release body for the summary
-        BODY=$(gh release view "$DRAFT_TAG" --json body --jq '.body')
+        # Get the release body for the summary (already in the API response)
+        BODY=$(echo "$DRAFT_INFO" | jq -r '.body // empty')
 
         # Create the new tag at the specified commit
         if git tag "$NEW_TAG" "${{ inputs.sha }}"; then
@@ -100,18 +106,23 @@ runs:
           exit 1
         fi
 
-        # Update and publish the release with new name and tag
-        if gh release edit "$DRAFT_TAG" \
-          --title "$NEW_TITLE" \
-          --tag "$NEW_TAG" \
-          --draft=false; then
+        # Publish by release ID to avoid any tag-name ambiguity.
+        # Write the JSON payload to a temp file to handle large bodies.
+        PATCH_FILE=$(mktemp)
+        printf '{"tag_name":%s,"name":%s,"draft":false}' \
+          "$(printf '%s' "$NEW_TAG" | jq -Rs .)" \
+          "$(printf '%s' "$NEW_TITLE" | jq -Rs .)" > "$PATCH_FILE"
+        if gh api "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_ID}" --method PATCH --input "$PATCH_FILE"; then
           echo "✓ Published release"
         else
           echo "❌ Failed to publish release"
+          rm -f "$PATCH_FILE"
           exit 1
         fi
+        rm -f "$PATCH_FILE"
 
-        # Clean up the old placeholder tag
+        # Clean up the old placeholder tag (best-effort; draft releases don't
+        # create real git tags, but clean up in case of a previous cycle).
         git push origin ":refs/tags/${DRAFT_TAG}" 2>/dev/null || true
 
         echo "tag=${NEW_TAG}" >> $GITHUB_OUTPUT

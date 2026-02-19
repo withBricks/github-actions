@@ -99,17 +99,23 @@ runs:
         RELEASE_NAME: ${{ inputs.release-name }}
         TAG_NAME: ${{ inputs.tag-name }}
       run: |
-        # Find existing draft release by name (safe jq --arg avoids injection)
-        EXISTING_TAG=$(gh release list --json tagName,name,isDraft \
-          | jq -r --arg name "$RELEASE_NAME" \
-            '[.[] | select(.name == $name and .isDraft == true)][0].tagName // empty' \
-          2>/dev/null || echo "")
+        # Use the REST API to find the draft release and get its numeric ID.
+        # gh release list --json does not expose the database ID, so we call
+        # gh api directly.  Using the numeric ID for all mutations ensures we
+        # never accidentally modify a different release by a conflicting tag name.
+        DRAFT_INFO=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+          | jq --arg name "$RELEASE_NAME" \
+            '[.[] | select(.name == $name and .draft == true)][0]' \
+          2>/dev/null || echo "null")
 
-        if [ -n "$EXISTING_TAG" ]; then
-          echo "📝 Found existing draft release with tag: ${EXISTING_TAG}"
+        EXISTING_TAG=$(echo "$DRAFT_INFO" | jq -r '.tag_name // empty')
+        EXISTING_ID=$(echo "$DRAFT_INFO" | jq -r '.id | if . == null then "" else tostring end')
 
-          # Get current body
-          CURRENT_BODY=$(gh release view "$EXISTING_TAG" --json body --jq '.body' 2>/dev/null || echo "")
+        if [ -n "$EXISTING_ID" ]; then
+          echo "📝 Found existing draft release with tag: ${EXISTING_TAG} (id: ${EXISTING_ID})"
+
+          # Body is already in the API response — no extra round-trip needed
+          CURRENT_BODY=$(echo "$DRAFT_INFO" | jq -r '.body // empty')
 
           # Append new entry (no leading indent — prevents Markdown code-block rendering)
           if [ -n "$CURRENT_BODY" ]; then
@@ -118,11 +124,12 @@ runs:
             UPDATED_BODY=$(printf '## Changes\n\n%s' "$NEW_ENTRY")
           fi
 
-          # Write to a temp file to avoid argv length limits with large changelogs
-          NOTES_FILE=$(mktemp)
-          printf '%s' "$UPDATED_BODY" > "$NOTES_FILE"
-          gh release edit "$EXISTING_TAG" --notes-file "$NOTES_FILE"
-          rm -f "$NOTES_FILE"
+          # Update by release ID to avoid any tag-name ambiguity.
+          # Write the JSON payload to a temp file to handle large bodies.
+          PATCH_FILE=$(mktemp)
+          printf '{"body":%s}' "$(printf '%s' "$UPDATED_BODY" | jq -Rs .)" > "$PATCH_FILE"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${EXISTING_ID}" --method PATCH --input "$PATCH_FILE"
+          rm -f "$PATCH_FILE"
           echo "actual_tag=${EXISTING_TAG}" >> $GITHUB_OUTPUT
           echo "✅ Appended change to existing draft release"
         else
