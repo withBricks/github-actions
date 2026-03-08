@@ -106,20 +106,53 @@ runs:
           exit 1
         fi
 
+        # Wait for GitHub to index the new tag before patching the release.
+        # If we PATCH with a tag_name that the API cannot yet resolve, GitHub
+        # silently ignores the tag_name field and leaves the release pointing
+        # at its untagged-* placeholder, which causes the release to remain
+        # (or revert to) draft state even though draft:false was set.
+        echo "⏳ Waiting for tag ${NEW_TAG} to be indexed by GitHub API..."
+        TAG_VISIBLE=false
+        for i in $(seq 1 12); do
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${NEW_TAG}" >/dev/null 2>&1; then
+            echo "✓ Tag is visible to the API (attempt ${i})"
+            TAG_VISIBLE=true
+            break
+          fi
+          echo "  attempt ${i}/12: tag not yet indexed, retrying in 5s..."
+          sleep 5
+        done
+
+        if [ "$TAG_VISIBLE" = "false" ]; then
+          echo "❌ Tag ${NEW_TAG} was not visible to the GitHub API after 60s"
+          exit 1
+        fi
+
         # Publish by release ID to avoid any tag-name ambiguity.
         # Write the JSON payload to a temp file to handle large bodies.
         PATCH_FILE=$(mktemp)
         printf '{"tag_name":%s,"name":%s,"draft":false,"make_latest":"true"}' \
           "$(printf '%s' "$NEW_TAG" | jq -Rs .)" \
           "$(printf '%s' "$NEW_TITLE" | jq -Rs .)" > "$PATCH_FILE"
-        if gh api "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_ID}" --method PATCH --input "$PATCH_FILE"; then
-          echo "✓ Published release"
-        else
+        PATCH_RESPONSE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${DRAFT_ID}" --method PATCH --input "$PATCH_FILE" 2>&1)
+        PATCH_EXIT=$?
+        rm -f "$PATCH_FILE"
+
+        if [ $PATCH_EXIT -ne 0 ]; then
           echo "❌ Failed to publish release"
-          rm -f "$PATCH_FILE"
+          echo "$PATCH_RESPONSE"
           exit 1
         fi
-        rm -f "$PATCH_FILE"
+
+        # Verify the tag was actually applied (guard against silent API rejection)
+        ACTUAL_TAG=$(echo "$PATCH_RESPONSE" | jq -r '.tag_name // empty' 2>/dev/null || echo "")
+        if [ "$ACTUAL_TAG" != "$NEW_TAG" ]; then
+          echo "❌ Release was patched but tag_name was not updated (got: '${ACTUAL_TAG}', expected: '${NEW_TAG}')"
+          echo "   This means GitHub could not resolve the tag at patch time."
+          exit 1
+        fi
+
+        echo "✓ Published release (tag_name verified: ${ACTUAL_TAG})"
 
         # Clean up the old placeholder tag (best-effort; draft releases don't
         # create real git tags, but clean up in case of a previous cycle).
